@@ -8,7 +8,7 @@
 ----------------------- An Object Request Broker in Lua ------------------------
 --------------------------------------------------------------------------------
 -- Project: OiL - ORB in Lua: An Object Request Broker in Lua                 --
--- Release: 0.4                                                               --
+-- Release: 0.5                                                               --
 -- Title  : Mapping of Lua values into CDR using dynamic generated code       --
 -- Authors: Renato Maia <maia@inf.puc-rio.br>                                 --
 --------------------------------------------------------------------------------
@@ -148,7 +148,7 @@ local function numberunmarshaller(size, format)
 	local code = code:format(format, size)
 	return function(self) self:add(code) end
 end
-DecoderGenerator.null       = function() self:add(" nil") end
+DecoderGenerator.null       = function(self) self:add(" nil") end
 DecoderGenerator.void       = DecoderGenerator.null
 DecoderGenerator.short      = numberunmarshaller( 2, "s")
 DecoderGenerator.long       = numberunmarshaller( 4, "l")
@@ -261,7 +261,7 @@ function DecoderGenerator:sequence(idltype)
 		gen:generate(elementtype)
 		self:add("setmetatable(self:sequenceof(",self:upvalue(gen:compile(elementtype)),",")
 		self:ulong()
-		self:add("),",self:upvalue(elementtype),")")
+		self:add("),",self:upvalue(idltype),")")
 	end
 end
 
@@ -309,14 +309,14 @@ end
 Decoder = oo.class({}, Decoder)
 
 function Decoder:alignedjump(value)
-	local pos = self.cursor - 2
-	pos = pos + 1 + (value - pos % value)
-	self.cursor = pos + value
+	local shift = value - (self.cursor - 2) % value - 1
+	local pos = self.cursor + shift
+	self:jump(shift + value)
 	return pos
 end
 
 function Decoder:sequenceof(decoder, length)
-	local sequence = {}
+	local sequence = { n = length }
 	for i = 1, length do
 		sequence[i] = decoder(self)
 	end
@@ -334,7 +334,7 @@ function Decoder:get(idltype)
 			idltype.unmarshall = unmarshall
 		else                                                                        --[[VERBOSE]] verbose:marshal("using dynamic unmarshaller for type ",idltype._type)
 			unmarshall = self[type] or
-			             assert.illegal(type, "supported type", "MARSHALL")
+			             assert.illegal(type, "supported type", "MARSHAL")
 		end                                                                         --[[VERBOSE]] else verbose:marshal("generated unmarshaller found for type ",idltype._type)
 	end
 	return unmarshall(self, idltype)
@@ -374,8 +374,9 @@ local aux
 end
 
 function EncoderGenerator:rawput(format, size, value)
-	self:add("format[#format+1],self[#self+1] = '",format,"',",value or self:top())
-	self:add("\nself.cursor = self.cursor+",size,"\n")
+	self:add("local index = self.index")
+	self:add("\nformat[index],self[index] = '",format,"',",value or self:top())
+	self:add("\nself.index,self.cursor = index+1,self.cursor+",size,"\n")
 end
 
 local function numbermarshaller(size, format)
@@ -557,7 +558,7 @@ function Encoder:put(value, idltype)
 			idltype.marshall = marshall
 		else                                                                        --[[VERBOSE]] verbose:marshal("using dynamic marshaller for type ",idltype._type)
 			marshall = self[type] or
-			           assert.illegal(type, "supported type", "MARSHALL")
+			           assert.illegal(type, "supported type", "MARSHAL")
 		end                                                                         --[[VERBOSE]] else verbose:marshal("generated marshaller found for type ",idltype._type)
 	end
 	return marshall(self, value, idltype)

@@ -8,7 +8,7 @@
 ----------------------- An Object Request Broker in Lua ------------------------
 --------------------------------------------------------------------------------
 -- Project: OiL - ORB in Lua: An Object Request Broker in Lua                 --
--- Release: 0.4                                                               --
+-- Release: 0.5                                                               --
 -- Title  : General Inter-ORB Protocol (GIOP) IDL specifications              --
 -- Authors: Renato Maia <maia@inf.puc-rio.br>                                 --
 --------------------------------------------------------------------------------
@@ -47,7 +47,10 @@ IOR = idl.struct{ -- because it avoids name clashes with object members.
 ObjectOperations = {
 	_interface = idl.operation{
 		name = "_interface",
-		result = idl.Object("IDL:omg.org/CORBA/InterfaceDef:1.0"),
+		result = idl.Object{
+			repID = "IDL:omg.org/CORBA/InterfaceDef:1.0",
+			name = "InterfaceDef",
+		},
 	},
 	_component = idl.operation{
 		name = "_component",
@@ -60,6 +63,11 @@ ObjectOperations = {
 	},
 	_non_existent = idl.operation{
 		name = "_non_existent",
+		result = idl.boolean,
+	},
+	_is_equivalent = idl.operation{
+		name = "_is_equivalent",
+		parameters = {{ type = idl.object, name = "reference" }},
 		result = idl.boolean,
 	},
 	-- TODO:[maia] add other basic operations

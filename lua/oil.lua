@@ -8,7 +8,7 @@
 ----------------------- An Object Request Broker in Lua ------------------------
 --------------------------------------------------------------------------------
 -- Project: OiL - ORB in Lua: An Object Request Broker in Lua                 --
--- Release: 0.4 alpha                                                         --
+-- Release: 0.4                                                               --
 -- Title  : OiL main programming interface (API)                              --
 -- Authors: Renato Maia <maia@inf.puc-rio.br>                                 --
 --------------------------------------------------------------------------------
@@ -57,16 +57,29 @@
 -- Notes:                                                                     --
 --------------------------------------------------------------------------------
 
-local module   = module
-local luapcall = pcall
-local require  = require
+local error        = error
+local ipairs       = ipairs
+local module       = module
+local pairs        = pairs
+local luapcall     = pcall
+local require      = require
+local tostring     = tostring
+local type         = type
+local traceback    = debug and debug.traceback
+local xpcall       = xpcall
+local select       = select
+local setmetatable = setmetatable
+local unpack       = unpack
 
 local io        = require "io"
 local coroutine = require "coroutine"
+local table     = require "table"
 
-local oo        = require "oil.oo"
-local builder   = require "oil.builder"
-local assert    = require "oil.assert"
+local OrderedSet = require "loop.collection.OrderedSet"
+
+local oo      = require "oil.oo"
+local builder = require "oil.builder"
+local assert  = require "oil.assert"
 
 --------------------------------------------------------------------------------
 -- OiL main programming interface (API).
@@ -78,30 +91,109 @@ local assert    = require "oil.assert"
 
 module "oil"
 
+local Aliases = {
+	["lua"]               = {"lua.client","lua.server"},
+	["ludo"]              = {"ludo.client","ludo.server"},
+	["corba"]             = {"corba.client","corba.server"},
+	["cooperative"]       = {"cooperative.client","cooperative.server"},
+	["corba.intercepted"] = {"corba.intercepted.client","corba.intercepted.server"},
+}
+
+local Dependencies = {
+	-- LuDO support
+	["ludo.client"] = {"ludo.common","basic.client"},
+	["ludo.server"] = {"ludo.common","basic.server"},
+	-- LuDO extension for by reference semantics
+	["ludo.byref"]  = {"ludo.common"},
+	-- CORBA support
+	["corba.client"] = {"corba.common","typed.client"},
+	["corba.server"] = {"corba.common","typed.server"},
+	-- CORBA extension for interception
+	["corba.intercepted.client"] = {"corba.client"},
+	["corba.intercepted.server"] = {"corba.server"},
+	-- CORBA extension for marshal code generation
+	["corba.gencode"] = {"corba.common"},
+	-- kernel extension for cooperative multithreading
+	["cooperative.client"] = {"cooperative.common","basic.client"},
+	["cooperative.server"] = {"cooperative.common","basic.server"},
+	-- kernel extension for type-check
+	["typed.client"] = {"typed.common","basic.client"},
+	["typed.server"] = {"typed.common","basic.server"},
+	-- kernel support
+	["basic.client"] = {"basic.common"},
+	["basic.server"] = {"basic.common"},
+}
+
+local function makeflavor(flavors)
+	local packs = OrderedSet()
+	for pack in flavors:gmatch("[^;]+") do
+		local aliases = Aliases[pack]
+		if aliases then
+			for _, alias in ipairs(aliases) do
+				packs:add(alias)
+			end
+		else
+			packs:add(pack)
+		end
+	end
+	for pack in packs:sequence() do
+		local deps = Dependencies[pack]
+		if deps then
+			for _, dep in ipairs(deps) do
+				packs:remove(dep)
+				packs:add(dep)
+			end
+		end
+	end
+	flavors = {}
+	for pack in packs:sequence() do
+		flavors[#flavors+1] = pack
+	end
+	return table.concat(flavors, ";")
+end
+
 --------------------------------------------------------------------------------
 -- Class that implements the OiL's broker API.
 --
 ORB = oo.class()
 
 function ORB:__init(config)
-	self = oo.rawnew(self, builder.build(config.flavor, config))
+	self = oo.rawnew(self, builder.build(makeflavor(config.flavor), config))
 	
-	------------------------------------------------------------------------------
-	-- Internal interface repository used by the ORB.
-	--
-	-- This is a alias for a facet of the Type Respository component of the
-	-- internal architecture.
-	-- If the current assembly does not provide this component, this field is
-	-- 'nil'.
-	--
-	-- @usage oil.types:register(oil.corba.idl.sequence{oil.corba.idl.string})   .
-	-- @usage oil.types:lookup("CORBA::StructDescription")                       .
-	-- @usage oil.types:lookup_id("IDL:omg.org/CORBA/InterfaceDef:1.0")          .
-	--
-	if self.TypeRepository ~= nil then self.types = self.TypeRepository.types end
-	if self.ClientChannels ~= nil then self.ClientChannels.options = config.tcpoptions end
-	if self.ServerChannels ~= nil then self.ServerChannels.options = config.tcpoptions end
-	assert.results(self.ServerBroker.broker:initialize(self))
+	if self.TypeRepository ~= nil then
+		----------------------------------------------------------------------------
+		-- Internal interface repository used by the ORB.
+		--
+		-- This is a alias for a facet of the Type Respository component of the
+		-- internal architecture.
+		-- If the current assembly does not provide this component, this field is
+		-- 'nil'.
+		--
+		-- @usage oil.types:register(oil.corba.idl.sequence{oil.corba.idl.string}) .
+		-- @usage oil.types:lookup("CORBA::StructDescription")                     .
+		-- @usage oil.types:lookup_id("IDL:omg.org/CORBA/InterfaceDef:1.0")        .
+		--
+		self.types = self.TypeRepository.types
+		self.TypeRepository.compiler.defaults.incpath = config.idlpaths
+	end
+	if self.ClientChannels ~= nil and config.tcpoptions then
+		self.ClientChannels.options = config.tcpoptions
+	end
+	if self.ServerChannels ~= nil and config.tcpoptions then
+		self.ServerChannels.options = config.tcpoptions
+	end
+	if self.ServantManager ~= nil then
+		self.ServantManager.prefix = config.keyprefix
+		self.ServantManager.map = config.objectmap or self.ServantManager.map
+	end
+	if self.ValueEncoder ~= nil then
+		if config.valuefactories == nil then
+			config.valuefactories = {}
+		end
+		self.ValueEncoder.factories = config.valuefactories
+	end
+	self.ServantManager.servants.accesspoint = 
+		assert.results(self.RequestReceiver.acceptor:initialize(self))
 	
 	return self
 end
@@ -159,7 +251,7 @@ end
 -- @usage oil.writeto("ir.ior", oil.tostring(oil.getLIR()))                    .
 --
 function ORB:getLIR()
-	return self:newservant(self.TypeRepository.types,
+	return self:newservant(self.types,
 	                       "InterfaceRepository",
 	                       "IDL:omg.org/CORBA/Repository:1.0")
 end
@@ -215,9 +307,23 @@ end
 -- @usage oil.newproxy("IOR:00000002B494...", "IDL:HelloWorld/Hello:1.0")      .
 -- @usage oil.newproxy("corbaloc::host:8080/Key", "IDL:HelloWorld/Hello:1.0")  .
 --
-function ORB:newproxy(object, type)
-	assert.type(object, "string", "object reference")
-	return assert.results(self.ClientBroker.broker:fromstring(object, type))
+function ORB:newproxy(reference, kind, iface)
+	local operation
+	if type(reference) == "string" then
+		operation = "fromstring"
+	else
+		operation = "resolve"
+		iface = iface or reference.__type
+		reference = reference.__reference or reference
+	end
+	local proxies
+	if kind == nil then
+		proxies = self.ProxyManager.proxies
+	else
+		proxies = self.extraproxies[kind] or
+		          assert.illegal(kind, "proxy kind")
+	end
+	return assert.results(proxies[operation](proxies, reference, iface))
 end
 
 --------------------------------------------------------------------------------
@@ -253,10 +359,9 @@ end
 function ORB:narrow(object, type)
 	assert.type(object, "table", "object proxy")
 	if type then assert.type(type, "string", "interface definition") end
-	if object and object._narrow then
-		return object:_narrow(type)
+	if object then
+		return assert.results(self.ProxyManager.proxies:newproxy(object.__reference, type))
 	end
-	return object
 end
 
 --------------------------------------------------------------------------------
@@ -290,9 +395,9 @@ end
 -- @usage oil.newservant({say_hello_to=print}, "Key","::HelloWorld::Hello")    .
 --
 function ORB:newservant(impl, key, type)
-	if not impl then assert.illegal(impl, "servant's implementation") end
-	if key then assert.type(key, "string", "servant's key") end
-	return assert.results(self.ServerBroker.broker:object(impl, key, type))
+	if impl == nil then assert.illegal(impl, "servant's implementation") end
+	if key ~= nil then assert.type(key, "string", "servant's key") end
+	return assert.results(self.ServantManager.servants:register(impl, key, type))
 end
 
 --------------------------------------------------------------------------------
@@ -321,7 +426,7 @@ function ORB:deactivate(object, type)
 		assert.illegal(object,
 			"object reference (servant, implementation or object key expected)")
 	end
-	return self.ServerBroker.broker:remove(object, type)
+	return self.ServantManager.servants:remove(object, type)
 end
 
 --------------------------------------------------------------------------------
@@ -337,8 +442,8 @@ end
 -- @usage oil.writeto("ref.ior", oil.tostring(oil.newservant(impl, "::Hello"))).
 --
 function ORB:tostring(object)
-	assert.type(object, "table", "servant object")
-	return assert.results(self.ServerBroker.broker:tostring(object))
+	assert.type(object, "table", "object")
+	return assert.results(self.ObjectReferrer.references:encode(object.__reference))
 end
 
 --------------------------------------------------------------------------------
@@ -354,7 +459,7 @@ end
 -- @usage while oil.pending() do oil.step() end                                .
 --
 function ORB:pending()
-	return assert.results(self.ServerBroker.broker:pending())
+	return assert.results(self.RequestReceiver.acceptor:hasrequest())
 end
 
 --------------------------------------------------------------------------------
@@ -368,7 +473,7 @@ end
 -- @usage while oil.pending() do oil.step() end                                .
 --
 function ORB:step()
-	return assert.results(self.ServerBroker.broker:step())
+	return assert.results(self.RequestReceiver.acceptor:acceptone())
 end
 
 --------------------------------------------------------------------------------
@@ -383,7 +488,7 @@ end
 -- @see init
 --
 function ORB:run()
-	return assert.results(self.ServerBroker.broker:run())
+	return assert.results(self.RequestReceiver.acceptor:acceptall())
 end
 
 --------------------------------------------------------------------------------
@@ -395,7 +500,7 @@ end
 -- @usage oil.shutdown()
 --
 function ORB:shutdown()
-	return assert.results(self.ServerBroker.broker:shutdown())
+	return assert.results(self.RequestReceiver.acceptor:halt())
 end
 
 --------------------------------------------------------------------------------
@@ -449,9 +554,8 @@ end
 --
 function ORB:newexcept(body)
 	assert.type(body, "table", "exception body")
-	local except = assert.results(self.TypeRepository.types:resolve(body[1]))
-	assert.type(except, "idl except", "referenced exception type")
-	body[1] = except.repID
+	local except = self.types and self.types:resolve(body[1])
+	if except then body[1] = except.repID end
 	return assert.Exception(body)
 end
 
@@ -477,7 +581,13 @@ end
 -- @usage oil.setexcatch(function(_, except) error(tostring(except)) end)
 --
 function ORB:setexcatch(handler, type)
-	assert.results(self.ClientBroker.broker:excepthandler(handler, type))
+	local managers = { self.ProxyManager }
+	for _, name in ipairs(self.extraproxies) do
+		managers[#managers+1] = self.extraproxies[name]
+	end
+	for _, manager in pairs(managers) do
+		assert.results(manager.proxies:excepthandler(handler, type))
+	end
 end
 
 --------------------------------------------------------------------------------
@@ -516,13 +626,7 @@ end
 -- those defined in the description of 'reply'.
 --
 function ORB:setclientinterceptor(iceptor)
-	if iceptor then
-		local ClientSide = require "oil.corba.interceptors.ClientSide"
-		iceptor = ClientSide{ interceptor = iceptor }
-	end
-	local port = require "loop.component.intercepted"
-	port.intercept(self.OperationRequester, "requests", "method", iceptor)
-	port.intercept(self.OperationRequester, "messenger", "method", iceptor)
+	return self:setinterceptor(iceptor, "corba.client")
 end
 
 --------------------------------------------------------------------------------
@@ -563,23 +667,52 @@ end
 -- those defined in the description of 'reply'.
 --
 function ORB:setserverinterceptor(iceptor)
-	if iceptor then
-		local ServerSide = require "oil.corba.interceptors.ServerSide"
-		iceptor = ServerSide{ interceptor = iceptor }
+	return self:setinterceptor(iceptor, "corba.server")
+end
+
+--------------------------------------------------------------------------------
+
+function ORB:setinterceptor(iceptor, kind)
+	local corbakind = kind:match("^corba(.-)$")
+	if corbakind then
+		if corbakind ~= ".server" then
+			self.OperationRequester.interceptor = iceptor
+		end
+		if corbakind ~= ".client" then
+			self.RequestListener.interceptor = iceptor
+		end
+	else
+		if kind ~= "server" then
+			local Wrapper = require "oil.kernel.intercepted.Requester"
+			local wrapper = Wrapper{
+				__object = self.OperationRequester.requests,
+				interceptor = iceptor,
+			}
+			self.ProxyManager.requester = wrapper
+			for _, proxykind in ipairs(self.extraproxies) do
+				local ProxyManager = self.extraproxies[proxykind]
+				ProxyManager.requester = wrapper
+			end
+		end
+		if kind ~= "client" then
+			local Wrapper = require "oil.kernel.intercepted.Listener"
+			local wrapper = Wrapper{
+				__object = self.RequestListener.requests,
+				interceptor = iceptor,
+			}
+			self.RequestReceiver.listener = wrapper
+		end
 	end
-	local port = require "loop.component.intercepted"
-	port.intercept(self.RequestListener, "messenger", "method", iceptor)
-	port.intercept(self.RequestDispatcher, "dispatcher", "method", iceptor)
 end
 
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
-VERSION = "OiL 0.4 beta"
+VERSION = "OiL 0.5"
 
 if BasicSystem == nil then
-	local factories = require "oil.builder.cooperative"
+	local factories = require "oil.builder.cooperative.common"
 	BasicSystem = factories.BasicSystem()
 end
 
@@ -620,15 +753,14 @@ end
 -- @usage oil.init{ port = 8080, flavor = "corba;typed;base" }                 .
 -- @usage oil.init{ port = 8080, flavor = "ludo;cooperative;base" }            .
 --
-local DefaultORB
 function init(config)
 	if config == nil then
-		if DefaultORB then return DefaultORB end
-		DefaultORB = {}
-		config = DefaultORB
+		if Default then return Default end
+		Default = {}
+		config = Default
 	end
 	if config.flavor == nil then
-		config.flavor = "corba;typed;cooperative;base"
+		config.flavor = "cooperative;corba"
 	end
 	if BasicSystem and config.BasicSystem == nil then
 		config.BasicSystem = BasicSystem
@@ -665,7 +797,20 @@ tasks = BasicSystem and BasicSystem.tasks
 -- @param ... any Values returned by the function or an the error raised by the
 -- function.
 --
-pcall = tasks and tasks:getpcall() or luapcall
+pcall = tasks and tasks.pcall or luapcall
+
+local function extracer(ex)
+	return traceback(tostring(ex))
+end
+
+if tasks then
+	local function maintrap(scheduler, thread, success, exception)
+		if not success then
+			error(traceback(thread, tostring(exception)), 3)
+		end
+	end
+	setmetatable(tasks.traps, { __index = function() return maintrap end })
+end
 
 --------------------------------------------------------------------------------
 -- Function executes the main function of the application.
@@ -676,16 +821,19 @@ pcall = tasks and tasks:getpcall() or luapcall
 --
 -- @param main function Appplication's main function.
 --
--- @usage oil.main(oil.run)
+-- @usage oil.main(orb.run, orb)
 -- @usage oil.main(function() print(oil.tostring(oil.getLIR())) oil.run() end)
 --
-function main(main, ...)
+function main(main)
 	assert.type(main, "function", "main function")
 	if tasks then
-		assert.results(tasks:register(coroutine.create(main), tasks.currentkey))
-		return BasicSystem.control:run(...)
-	else
-		return main(...)
+		main = coroutine.create(main)
+		assert.results(tasks:register(main, tasks.currentkey))
+		return BasicSystem.control:run()
+	end
+	local success, except = xpcall(main, extracer)
+	if not success then
+		error(except, 2)
 	end
 end
 
@@ -744,7 +892,7 @@ function writeto(filepath, text)
 	local result, errmsg = io.open(filepath, "w")
 	if result then
 		local file = result
-		result, errmsg = file:write(text)
+		result, errmsg = file:write(tostring(text))
 		file:close()
 	end
 	return result, errmsg

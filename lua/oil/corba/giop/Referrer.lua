@@ -8,7 +8,7 @@
 ----------------------- An Object Request Broker in Lua ------------------------
 --------------------------------------------------------------------------------
 -- Project: OiL - ORB in Lua: An Object Request Broker in Lua                 --
--- Release: 0.4                                                               --
+-- Release: 0.5                                                               --
 -- Title  : Interoperable Object Reference (IOR) support                      --
 -- Authors: Renato Maia <maia@inf.puc-rio.br>                                 --
 --------------------------------------------------------------------------------
@@ -17,7 +17,7 @@
 --   See section 13.6.10 of CORBA 3.0 specification for corbaloc.             --
 --------------------------------------------------------------------------------
 -- references:Facet
--- 	reference:table referenceto(objectkey:string, accesspointinfo:table...)
+-- 	reference:table newreference(objectkey:string, accesspointinfo:table...)
 -- 	reference:string encode(reference:table)
 -- 	reference:table decode(reference:string)
 -- 
@@ -27,24 +27,25 @@
 -- 
 -- profiler:HashReceptacle
 -- 	profile:table decodeurl(url:string)
--- 	data:string encode(objectkey:string, acceptorinfo...)
+-- 	data:string encode(accesspoint:object, key:string, type)
 -- 
 -- types:Receptacle--[[
 -- 	interface:table typeof(objectkey:string)
 --------------------------------------------------------------------------------
 
-local select = select
-local tonumber  = tonumber
+local ipairs       = ipairs
+local select       = select
+local setmetatable = setmetatable
+local tonumber     = tonumber
 
 local string = require "string"
 
 local oo        = require "oil.oo"
+local idl       = require "oil.corba.idl"
 local giop      = require "oil.corba.giop"
 local Exception = require "oil.corba.giop.Exception"                            --[[VERBOSE]] local verbose = require "oil.verbose"
 
 module("oil.corba.giop.Referrer", oo.class)
-
-context = false
 
 --------------------------------------------------------------------------------
 -- String/byte conversions -----------------------------------------------------
@@ -73,18 +74,23 @@ end
 --------------------------------------------------------------------------------
 
 function IOR(self, stream)
-	local decoder = self.context.codec:decoder(hexa2byte(stream), true)
+	local decoder = self.codec:decoder(hexa2byte(stream), true)
 	return decoder:struct(giop.IOR)
 end
 
 function corbaloc(self, encoded)
 	for token, data in string.gmatch(encoded, "(%w*):([^,]*)") do
-		local profiler = self.context.profiler[token]
+		local profiler = self.profiler[token]
 		if profiler then
-			return {
-				type_id = "",
-				profiles = { profiler:decodeurl(data) },
-			}
+			local profile, except = profiler:decodeurl(data)
+			if profile then
+				return setmetatable({
+					type_id = idl.object.repID,
+					profiles = { profile },
+				}, giop.IOR)
+			else
+				return nil, except
+			end
 		end
 	end
 	return nil, Exception{ "INV_OBJREF",
@@ -95,33 +101,66 @@ function corbaloc(self, encoded)
 end
 
 --------------------------------------------------------------------------------
--- Coding ----------------------------------------------------------------------
+--------------------------------------------------------------------------------
 
-function referenceto(self, objectkey, ...)
+function newreference(self, access, key, type)
 	local profiles = {}
-	for i = 1, select("#", ...) do
-		local acceptor = select(i, ...)
-		local tag = acceptor.tag or 0
-		local profiler = self.context.profiler[tag]
-		if profiler then
-			local ok, except = profiler:encode(profiles, objectkey, acceptor)
-			if not ok then return nil, except end
-		else
-			return nil, Exception{ "IMP_LIMIT", minor_code_value = 1,
-				message = "GIOP profile tag not supported",
-				reason = "profiles",
-				tag = tag,
-			}
-		end
+	local tag = access.tag or 0
+	local profiler = self.profiler[tag]
+	if profiler then
+		local ok, except = profiler:encode(profiles, key, access)
+		if not ok then return nil, except end
+	else
+		return nil, Exception{ "IMP_LIMIT", minor_code_value = 1,
+			message = "GIOP profile tag not supported",
+			reason = "profiles",
+			tag = tag,
+		}
 	end
-	return {
-		type_id = self.context.types:typeof(objectkey).repID,
+	return setmetatable({
+		type_id = type.repID,
 		profiles = profiles,
-	}
+	}, giop.IOR)
 end
 
+function islocal(self, reference, access)
+	local profilers = self.profiler
+	for _, profile in ipairs(reference.profiles) do
+		local profiler = profilers[profile.tag]
+		if profiler then
+			local result = profiler:belongsto(profile.profile_data, access)
+			if result then
+				return result
+			end
+		end
+	end
+end
+
+local _interface = giop.ObjectOperations._interface
+local NO_IMPLEMENT = giop.SystemExceptionIDs.NO_IMPLEMENT
+function typeof(self, reference)
+	local requester = self.requester
+	local result, except = requester:newrequest(reference, _interface)
+	if result then
+		local request = result
+		result, except = requester:getreply(request)
+		if result then
+			result = request[1]
+			if request.success then
+				except = nil
+			else
+				result, except = reference.type_id, nil
+			end
+		end
+	end
+	return result, except
+end
+
+--------------------------------------------------------------------------------
+-- Coding ----------------------------------------------------------------------
+
 function encode(self, ior)
-	local encoder = self.context.codec:encoder(true)
+	local encoder = self.codec:encoder(true)
 	encoder:struct(ior, giop.IOR)
 	return "IOR:"..byte2hexa(encoder:getdata())
 end

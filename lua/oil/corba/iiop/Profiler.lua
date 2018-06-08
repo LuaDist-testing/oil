@@ -8,7 +8,7 @@
 ----------------------- An Object Request Broker in Lua ------------------------
 --------------------------------------------------------------------------------
 -- Project: OiL - ORB in Lua                                                  --
--- Release: 0.4                                                               --
+-- Release: 0.5                                                               --
 -- Title  : IIOP Profile Encoder/Decoder                                      --
 -- Authors: Renato Maia <maia@inf.puc-rio.br>                                 --
 --------------------------------------------------------------------------------
@@ -32,15 +32,11 @@ local tonumber = tonumber
 
 local string = require "string"
 
-local socket = require "socket.core"
-
 local oo        = require "oil.oo"
 local idl       = require "oil.corba.idl"
 local Exception = require "oil.corba.giop.Exception"                            --[[VERBOSE]] local verbose = require "oil.verbose"
 
 module("oil.corba.iiop.Profiler", oo.class)
-
-context = false
 
 --------------------------------------------------------------------------------
 -- IIOP profile structure
@@ -80,27 +76,15 @@ function encode(self, profiles, object_key, config, minor)
 	if not minor then minor = 0 end
 	local profileidl = ProfileBody_v1_[minor]
 	if profileidl then
-		local host = config.refhost or config.host
 		local port = config.refport or config.port
-		if host == "*" then host = socket.dns.gethostname() end
-		local hosts, address = socket.dns.toip(host)
-		if hosts then
-			hosts = address.ip
-			hosts[#hosts+1] = address.name
-			for _, alias in ipairs(address.alias) do
-				hosts[#hosts+1] = alias
-			end
-		else
-			hosts = {host}
-		end
-		for _, host in ipairs(hosts) do
+		for _, addr in ipairs(config.addresses) do
 			local profile = {
 				components = Empty,
-				host = host,
+				host = addr,
 				port = port,
 				object_key = object_key
 			}
-			local encoder = self.context.codec:encoder(true)
+			local encoder = self.codec:encoder(true)
 			encoder:struct({major=1, minor=minor}, idl.Version)
 			encoder:struct(profile, profileidl)
 			profiles[#profiles+1] = {
@@ -120,7 +104,7 @@ function encode(self, profiles, object_key, config, minor)
 end
 
 function decode(self, profile)
-	local decoder = self.context.codec:decoder(profile, true)
+	local decoder = self.codec:decoder(profile, true)
 	local version = decoder:struct(idl.Version)
 	local profileidl = ProfileBody_v1_[version.minor]
 
@@ -145,9 +129,7 @@ end
 function belongsto(self, profile, config)
 	local objectkey
 	profile, objectkey = self:decode(profile)
-	local host = config.host
-	if host == "*" then host = socket.dns.gethostname() end
-	if profile.host == host and profile.port == config.port then
+	if config.addresses[profile.host] and profile.port == config.port then
 		return objectkey
 	end
 end
@@ -175,7 +157,11 @@ function decodeurl(self, data)
 	end
 	local major, minor
 	major, minor, temp = string.match(data, "^(%d+).(%d+)@(.+)$")
-	if not minor then minor = 0 end
+	if not minor then
+		minor = 0
+	else
+		minor = tonumber(minor)
+	end
 	local profileidl = ProfileBody_v1_[minor]
 	if (major and major ~= "1") or (not profileidl) then
 		return nil, Exception{ "INTERNAL", minor_code_value = 0,
@@ -199,7 +185,7 @@ function decodeurl(self, data)
 		end
 	end
 	
-	temp = self.context.codec:encoder(true)
+	temp = self.codec:encoder(true)
 	temp:struct({major=1,minor=minor}, idl.Version)
 	temp:struct({
 		components = Empty,

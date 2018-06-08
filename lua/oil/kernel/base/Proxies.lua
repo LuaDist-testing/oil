@@ -8,7 +8,7 @@
 ----------------------- An Object Request Broker in Lua ------------------------
 --------------------------------------------------------------------------------
 -- Project: OiL - ORB in Lua: An Object Request Broker in Lua                 --
--- Release: 0.4                                                               --
+-- Release: 0.5                                                               --
 -- Title  : Remote Object Proxies                                             --
 -- Authors: Renato Maia <maia@inf.puc-rio.br>                                 --
 --------------------------------------------------------------------------------
@@ -19,151 +19,68 @@
 -- 	[results:object], [except:table] invoke(reference, operation, args...)
 --------------------------------------------------------------------------------
 
-local assert       = assert
-local error        = error
-local pairs        = pairs
-local rawget       = rawget
-local select       = select
 local setmetatable = setmetatable
-local unpack       = unpack
-
-local table = require "loop.table"
 
 local oo = require "oil.oo"                                                     --[[VERBOSE]] local verbose = require "oil.verbose"
 
 module("oil.kernel.base.Proxies", oo.class)
 
-context = false
-
---------------------------------------------------------------------------------
-
-Results = oo.class{}
-
-function Results:results()
-	return self.success, unpack(self, 1, self.resultcount)
-end
-
---------------------------------------------------------------------------------
-
-local DefaultHandler
-
-function callhandler(self, ...)
-	local handler = rawget(self, "__exceptions") or
-	                rawget(oo.classof(self), "__exceptions") or
-	                DefaultHandler or
-	                error((...))
-	return handler(self, ...)
-end
-
-function packresults(...)
-	return Results{ success = true, resultcount = select("#", ...), ... }
-end
-
---------------------------------------------------------------------------------
-
-function assertcall(self, operation, reply, except)
-	return reply or packresults(callhandler(self, except, operation))
-end
-
-function assertresults(self, operation, success, except, ...)
-	if not success then
-		return callhandler(self, except, operation)
-	end
-	return except, ...
-end
-
---------------------------------------------------------------------------------
-
-function newcache(methodmaker)
-	return setmetatable(oo.initclass(), {
-		__mode = "v",
+local function newclass(methodmaker)
+	return setmetatable(oo.initclass{
+		__tostring = proxytostring,
+	}, {
+		__mode = "v", -- TODO:[maia] can method creation/collection be worse than
+		              --             memory leak due to invocation of constantly
+		              --             changing methods ?
 		__call = oo.rawnew,
-		__index = function(cache, operation)
-			local function invoker(self, ...)                                         --[[VERBOSE]] verbose:proxies("call to ",operation, ...)
-				return self.__context.invoker:invoke(self.__reference, operation, ...)
+		__index = function(cache, field)
+			local function invoker(self, ...)                                         --[[VERBOSE]] verbose:proxies("call to ",field," ", ...)
+				return self.__manager.requester:newrequest(self.__reference, field, ...)
 			end
-			invoker = methodmaker(invoker, operation)
-			cache[operation] = invoker
+			invoker = methodmaker(invoker, field)
+			cache[field] = invoker
 			return invoker
 		end,
 	})
 end
 
---------------------------------------------------------------------------------
-
-function makemethod(invoker, operation)
-	return function(self, ...)
-		return assertresults(self, operation,
-			assertcall(self, operation, invoker(self, ...)):results()
-		)
-	end
+function __init(self, ...)
+	self = oo.rawnew(self, ...)
+	self.class = self.class or newclass(self.invoker)
+	return self
 end
 
-Proxy = newcache(makemethod)
+function fromstring(self, reference, ...)
+	local result, except = self.referrer:decode(reference)
+	if result then
+		result, except = self:resolve(result, ...)
+	end
+	return result, except
+end
 
---------------------------------------------------------------------------------
-
-
-function makeprotected(invoker)
-	return function(self, ...)
-		local reply, except = invoker(self, ...)
-		if reply
-			then return reply:results()
-			else return false, except
+function resolve(self, reference, ...)                                          --[[VERBOSE]] verbose:proxies(true, "resolve reference for ",reference)
+	local result, except
+	local servants = self.servants
+	if servants then
+		result, except = self.referrer:islocal(reference, servants.accesspoint)
+		if result then                                                              --[[VERBOSE]] verbose:proxies("local object with key '",result,"' restored")
+			result = servants:retrieve(result)
 		end
 	end
+	if not result then                                                            --[[VERBOSE]] verbose:proxies("new proxy created for reference", reference)
+		result, except = self:newproxy(reference, ...)
+	end                                                                           --[[VERBOSE]] verbose:proxies(false)
+	return result, except
 end
 
-Protected = newcache(makeprotected)
-
---------------------------------------------------------------------------------
-
-FailedFuture = oo.class()
-function FailedFuture:ready() return true end
-function FailedFuture:results() return false, self[1] end
-function evaluatefuture(self)                                                   --[[VERBOSE]] verbose:proxies("getting deferred results of ",self.operation)
-	return assertresults(
-		self.proxy,
-		self.operation,
-		self:results()
-	)
-end
-
-function makedeferred(invoker, operation)
-	return function(self, ...)
-		local reply, except = invoker(self, ...)
-		if reply == nil then reply = FailedFuture{ except } end
-		reply.proxy = self
-		reply.operation = operation
-		reply.evaluate = evaluatefuture
-		return reply
-	end
-end
-
-Deferred = newcache(makedeferred)
-
---------------------------------------------------------------------------------
-
-Extras = {
-	__deferred = Deferred,
-	__try = Protected,
-}
-
-function proxyto(self, reference)
-	local proxy = Proxy{
-		__context = self.context,
+function newproxy(self, reference)                                              --[[VERBOSE]] verbose:proxies("new proxy to ",reference)
+	return self.class{
+		__manager = self,
 		__reference = reference,
 	}
-	for label, class in pairs(Extras) do
-		proxy[label] = class{
-			__context = self.context,
-			__reference = reference,
-		}
-	end
-	return proxy
 end
 
-function excepthandler(self, handler)
-	DefaultHandler = handler
+function excepthandler(self, handler)                                           --[[VERBOSE]] verbose:proxies("setting exception handler for proxies")
+	self.defaulthandler = handler
 	return true
 end

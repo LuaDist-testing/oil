@@ -8,7 +8,7 @@
 ----------------------- An Object Request Broker in Lua ------------------------
 --------------------------------------------------------------------------------
 -- Project: OiL - ORB in Lua: An Object Request Broker in Lua                 --
--- Release: 0.4                                                               --
+-- Release: 0.5                                                               --
 -- Title  : Interface Definition Language (IDL) compiler                      --
 -- Authors: Renato Maia   <maia@inf.puc-rio.br>                               --
 --          Ricardo Cosme <rcosme@tecgraf.puc-rio.br>                         --
@@ -25,6 +25,7 @@ local pairs  = pairs
 local select = select
 local unpack = unpack
 
+local table  = require "loop.table"
 local luaidl = require "luaidl"
 
 local oo  = require "oil.oo"
@@ -35,7 +36,7 @@ module("oil.corba.idl.Compiler", oo.class)
 context = false
 
 --------------------------------------------------------------------------------
-Options = {
+DefaultOptions = {
 	callbacks = {
 		VOID      = idl.void,
 		SHORT     = idl.short,
@@ -54,51 +55,79 @@ Options = {
 		TYPECODE  = idl.TypeCode,
 		STRING    = idl.string,
 		OBJECT    = idl.object,
+		VALUEBASE = idl.ValueBase,
 		operation = idl.operation,
 		attribute = idl.attribute,
 		except    = idl.except,
 		union     = idl.union,
 		struct    = idl.struct,
 		enum      = idl.enum,
-		typedef   = idl.typedef,
 		array     = idl.array,
 		sequence  = idl.sequence,
+		valuetype = idl.valuetype,
+		valuebox  = idl.valuebox,
+		typedef   = idl.typedef,
 	},
 }
-function Options.callbacks.interface(def)
+
+function DefaultOptions.callbacks.interface(def)
 	if def.definitions then -- not forward declarations
+		--<PROBLEM WITH LUAIDL>
+		--if def.abstract then
+		--	return idl.abstract_interface(def)
+		--end
+		--</PROBLEM WITH LUAIDL>
 		return idl.interface(def)
 	end
 	return def
 end
 
 local Modules
-function Options.callbacks.module(def)
+function DefaultOptions.callbacks.module(def)
 	Modules[def] = true
 	return def
 end
 
-function Options.callbacks.start()
+function DefaultOptions.callbacks.start()
 	Modules = {}
 end
 
-function Options.callbacks.finish()
+function DefaultOptions.callbacks.finish()
 	for module in pairs(Modules) do idl.module(module) end
 end
 
 --------------------------------------------------------------------------------
 
+function __init(self, ...)
+	self = oo.rawnew(self, ...)
+	self.defaults = table.copy(DefaultOptions)
+	return self
+end
+
 function doresults(self, ...)
 	if ... then
-		return self.context.registry:register(...)
+		return self.context.__component:register(...)
 	end
 	return ...
 end
 
-function loadfile(self, filepath)
-	return self:doresults(luaidl.parsefile(filepath, self.Options))
+function options(self, idlpaths)
+	local options = self.defaults
+	if idlpaths then
+		options = table.copy(options)
+		local incpath = table.copy(options.incpath)
+		for index, incpath in ipairs(idlpaths) do
+			incpath[#incpath+1] = incpath
+		end
+		options.incpath = incpath
+	end
+	return options
 end
 
-function load(self, idlspec)
-	return self:doresults(luaidl.parse(idlspec, self.Options))
+function loadfile(self, filepath, idlpaths)
+	return self:doresults(luaidl.parsefile(filepath, self:options(idlpaths)))
+end
+
+function load(self, idlspec, idlpaths)
+	return self:doresults(luaidl.parse(idlspec, self:options(idlpaths)))
 end

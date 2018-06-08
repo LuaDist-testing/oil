@@ -1,5 +1,3 @@
-local error = error
-
 --------------------------------------------------------------------------------
 ------------------------------  #####      ##     ------------------------------
 ------------------------------ ##   ##  #  ##     ------------------------------
@@ -10,7 +8,7 @@ local error = error
 ----------------------- An Object Request Broker in Lua ------------------------
 --------------------------------------------------------------------------------
 -- Project: OiL - ORB in Lua: An Object Request Broker in Lua                 --
--- Release: 0.4                                                               --
+-- Release: 0.5                                                               --
 -- Title  : Remote Object Proxies                                             --
 -- Authors: Renato Maia <maia@inf.puc-rio.br>                                 --
 --------------------------------------------------------------------------------
@@ -25,42 +23,34 @@ local error = error
 -- 	[results:object], [except:table] invoke(reference, operation, args...)
 --------------------------------------------------------------------------------
 
---[[VERBOSE]] local select = select
-
-local pairs  = pairs
-local rawget = rawget
 local rawset = rawset
-local type   = type
 
-local table = require "loop.table"
-
-local ObjectCache = require "loop.collection.ObjectCache"
+local tabop       = require "loop.table"                                        --[[VERBOSE]] local select = select
+local ObjectCache = require "loop.collection.ObjectCache"                       --[[VERBOSE]] local type   = type
 
 local oo        = require "oil.oo"
 local Exception = require "oil.Exception"
 local Proxies   = require "oil.kernel.base.Proxies"                             --[[VERBOSE]] local verbose = require "oil.verbose"
 
-module("oil.kernel.typed.Proxies", oo.class)
+module "oil.kernel.typed.Proxies"
 
-context = false
+oo.class(_M, Proxies)
 
 --------------------------------------------------------------------------------
 
-function newcache(methodmaker)
+local function newclass(methodmaker)
 	return oo.class{
-		__index = function(self, field)
-			if type(field) == "string" then
-				local context = self.__context
-				local operation, value = context.indexer:valueof(self.__type, field)
-				if value ~= nil then
-					value = methodmaker(value, operation)
-				elseif operation then
-					value = methodmaker(function(self, ...)                               --[[VERBOSE]] verbose:proxies("call to ",operation, ...)
-						return context.invoker:invoke(self.__reference, operation, ...)
-					end, operation)
+		__call = oo.rawnew,
+		__index = function(cache, field)                                            --[[VERBOSE]] verbose:proxies("first attempt to invoke operation ",field)
+			local manager = cache.__manager
+			local operation = manager.indexer:valueof(cache.__type, field)
+			if operation then
+				local function invoker(self, ...)                                       --[[VERBOSE]] verbose:proxies("call to ",operation, ...)
+					return manager.requester:newrequest(self.__reference, operation, ...)
 				end
-				self[field] = value
-				return value
+				invoker = methodmaker(invoker, operation)                               --[[VERBOSE]] verbose:proxies("operation named ",field," was created")
+				cache[field] = invoker                                                  --[[VERBOSE]]
+				return invoker                                                          --[[VERBOSE]] else verbose:proxies("operation named ",field," not found")
 			end
 		end
 	}
@@ -68,100 +58,66 @@ end
 
 --------------------------------------------------------------------------------
 
-ProxyClass     = newcache(Proxies.makemethod)
-ProtectedClass = newcache(Proxies.makeprotected)
-DeferredClass  = newcache(Proxies.makedeferred)
+function proxynarrow(self, type)
+	return self.__manager.proxies:newproxy(self.__reference, type)
+end
 
---------------------------------------------------------------------------------
-
-local Classes = {
-	ProxyClass,
-	__deferred =  DeferredClass,
-	__try = ProtectedClass,
-}
-
-function __init(self, object)
-	self = oo.rawnew(self, object)
-	local prxcls = {}
-	for label, class in pairs(Classes) do
-		prxcls[label] = ObjectCache{
-			retrieve = function(_, type)
-				local class = class()
-				local updater = {}
-				function updater.notify()
-					table.clear(class)
-					class.__context = self.context
-					class.__type = type
-					oo.initclass(class)
-				end
-				updater:notify()
-				if type.observer then
-					rawset(type.observer, class, updater)
-				end
-				return class
+function __init(self, ...)
+	self = oo.rawnew(self, ...)
+	self.class = self.class or newclass(self.invoker)
+	self.classes = ObjectCache{
+		retrieve = function(_, type)
+			local class = self.class()
+			local updater = {}
+			function updater.notify()
+				tabop.clear(class)
+				class.__manager = self
+				class.__type = type
+				class.__tostring = proxytostring
+				class.__narrow = proxynarrow
+				class._narrow = proxynarrow -- TODO:[maia] DEPRECATED!
+				oo.initclass(class)
 			end
-		}
-	end
-	self.classes = prxcls[1]
-	prxcls[1] = nil
-	self.extras = prxcls
+			updater:notify()
+			if type.observer then
+				rawset(type.observer, class, updater)
+			end
+			return class
+		end
+	}
 	return self
 end
 
 --------------------------------------------------------------------------------
 
-function proxyto(self, reference, type)                                         --[[VERBOSE]] verbose:proxies(true, "new proxy to ",reference)
-	local context = self.context
-	type = type or context.indexer:typeof(reference)
-	local result, except = self.classes[type]
-	if result then
-		result = oo.rawnew(result, { __reference = reference })
-		for label, classes in pairs(self.extras) do
-			local class = classes[type]
-			if class then
-				result[label] = oo.rawnew(class, { __reference = reference })
-			end
+function newproxy(self, reference, type)                                        --[[VERBOSE]] verbose:proxies(true, "new proxy to ",reference," with type ",type)
+	local result, except
+	if not type then                                                              --[[VERBOSE]] verbose:proxies(true, "interface of proxy not provided, attempt to discover it")
+		type, except = self.referrer:typeof(reference)                              --[[VERBOSE]] verbose:proxies(false, "interface of proxy",(type and " " or " not "),"found")
+	end
+	if type then
+		type, except = self.types:resolve(type)
+		if type then
+			result = self.classes[type]{ __reference = reference }
 		end
-	else
-		except = Exception{
-			reason = "type",
-			message = "unable to get type for reference",
-			reference = reference,
-			type = type,
-		}
 	end                                                                           --[[VERBOSE]] verbose:proxies(false)
 	return result, except
 end
 
-function excepthandler(self, handler, type)
-	if type then
-		local result, except = self.classes[type]
-		if result then
-			result.__exceptions = handler
-			for label, classes in pairs(self.extras) do
-				local class = classes[type]
-				if class then
-					class.__exceptions = handler
-				end
-			end
-		else
-			except = Exception{
-				reason = "type",
-				message = "unknown type",
-				type = type,
-			}
-		end
-		return result, except
+function excepthandler(self, handler, type)                                     --[[VERBOSE]] verbose:proxies("setting exception handler for proxies of ",type)
+	local result, except = true
+	if type == nil then
+		result, except = Proxies.excepthandler(self, handler)
 	else
-		return Proxies.excepthandler(self, handler)
+		result, except = self.types:resolve(type)
+		if result then
+			type = result
+			local class = self.classes[type]
+			class.__exceptions = handler
+			result, except = class, nil
+		end
 	end
-end
-
-function resetcache(self, interface)
-	local class = rawget(self.classes, interface)
-	if class then
-		table.clear(class)
-	end
+	return result, except
 end
 
 --------------------------------------------------------------------------------

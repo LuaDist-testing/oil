@@ -8,7 +8,7 @@
 ----------------------- An Object Request Broker in Lua ------------------------
 --------------------------------------------------------------------------------
 -- Project: OiL - ORB in Lua                                                  --
--- Release: 0.4                                                               --
+-- Release: 0.5                                                               --
 -- Title  : Client-side CORBA GIOP Protocol                                   --
 -- Authors: Renato Maia <maia@inf.puc-rio.br>                                 --
 --------------------------------------------------------------------------------
@@ -16,7 +16,7 @@
 --   See section 15.4.1 of CORBA 3.0 specification.                           --
 --------------------------------------------------------------------------------
 -- messenger:Facet
--- 	success:booelan, [except:table] = sendmsg(channel:object, type:number, header:table, types:table, values...)
+-- 	success:booelan, [except:table] = sendmsg(channel:object, type:number, header:table, types:table, values)
 -- 	type:number, header:table, decoder:object = receivemsg(channel:object , [wait:boolean])
 -- 
 -- codec:Receptacle
@@ -24,8 +24,11 @@
 -- 	decoder:object decoder(stream:string)
 --------------------------------------------------------------------------------
 
-local ipairs = ipairs
-local select = select                                                           --[[VERBOSE]] local type = type
+local assert   = assert
+local ipairs   = ipairs
+local luapcall = pcall
+local select   = select
+local type     = type
 
 local oo        = require "oil.oo"
 local bit       = require "oil.bit"
@@ -34,7 +37,7 @@ local Exception = require "oil.corba.giop.Exception"                            
 
 module("oil.corba.giop.Messenger", oo.class)
 
-context = false
+pcall = luapcall
 
 --------------------------------------------------------------------------------
 
@@ -53,18 +56,27 @@ header = {
 
 --------------------------------------------------------------------------------
 
-function sendmsg(self, channel, type, message, types, ...)                      --[[VERBOSE]] verbose:message(true, "send message ",type)
+function sendmsg(self, channel, msgtype, message, types, values)                --[[VERBOSE]] verbose:message(true, "send message ",msgtype," ",message)
 	--
 	-- Create GIOP message body
 	--
-	local encoder = self.context.codec:encoder()
+	local encoder = self.codec:encoder()
 	encoder:shift(self.headersize) -- alignment accordingly to GIOP header size
 	if message then
-		encoder:put(message, self.messagetype[type])
+		encoder:put(message, self.messagetype[msgtype])
 	end
 	if types then
-		for index, type in ipairs(types) do
-			encoder:put(select(index, ...), type)
+		local count = values.n or #values
+		for index, idltype in ipairs(types) do
+			local value
+			if index <= count then
+				value = values[index]
+			end
+			local ok, errmsg = self.pcall(encoder.put, encoder, value, idltype)
+			if not ok then
+				assert(type(errmsg) == "table", errmsg)
+				return nil, errmsg
+			end
 		end
 	end
 	local stream = encoder:getdata()
@@ -74,32 +86,44 @@ function sendmsg(self, channel, type, message, types, ...)                      
 	--
 	local header = self.header
 	header.message_size = #stream
-	header.message_type = type
-	encoder = self.context.codec:encoder()
+	header.message_type = msgtype
+	encoder = self.codec:encoder()
 	encoder:struct(header, self.headertype)
 	stream = encoder:getdata()..stream
-
+	
 	--
 	-- Send stream over the channel
 	--
 	local success, except, reset
 	repeat
+		channel:trylock("write", true)
 		success, except = channel:send(stream)
 		if not success then
 			if except == "closed" then
-				if reset == nil and channel.reset and channel:reset() then
-					-- only clients have 'reset' op.
-					reset, success, except = true, nil, nil 
+				-- only clients have 'reset' op.
+				if reset == nil and channel.reset then
+					success, except = channel:reset()
+					if success then
+						reset, success, except = true, nil, nil 
+					end
 				else
 					channel:close()
 				end
 			end
+		-- else
+			--TODO:[maia] How can I assure that someone is actually listening
+			--            to this channel? Because if the server has closed
+			--            the connection, we have received a FIN, but the RST
+			--            may not have been received yet, so we might be sending
+			--            data to a socket no one is listening to. (see page 132
+			--            of R. Stevens, UNIX network programming, 2nd ed, 1997)
 		end
+		channel:freelock("write")
 	until success or except
 	if except then
 		except = Exception{ "COMM_FAILURE", minor_code_value = 0,
-			message = "unable to write into connection",
-			reason = except,
+			message = "unable to write into connection ("..except..")",
+			reason = "closed",
 			connection = channel,
 		}
 	end                                                                           --[[VERBOSE]] verbose:message(false)
@@ -109,13 +133,13 @@ end
 
 --------------------------------------------------------------------------------
 
-function receivemsg(self, channel)                                              --[[VERBOSE]] verbose:message(true, "receive message")
+function receivemsg(self, channel)                                              --[[VERBOSE]] verbose:message(true, "receive message from channel")
 	local success, except = channel:receive(self.headersize)
 	if success then
-		local decoder = self.context.codec:decoder(success)
+		local decoder = self.codec:decoder(success)
 		--
 		-- Read GIOP message header
-			--
+		--
 		local header = self.headertype
 		local magic = decoder:array(header[1].type)
 		if magic == self.magictag then
@@ -127,7 +151,11 @@ function receivemsg(self, channel)                                              
 				--
 				-- Read GIOP message body
 				--
-				success, except = channel:receive(size)
+				if size > 0 then
+					success, except = channel:receive(size)
+				else
+					success, except = "", nil
+				end
 				if success then
 					decoder:append(success)
 					success = type
@@ -148,8 +176,8 @@ function receivemsg(self, channel)                                              
 				else
 					if except == "closed" then channel:close() end
 					except = Exception{ "COMM_FAILURE", minor_code_value = 0,
-						message = "unable to read from connection",
-						reason = except,
+						message = "unable to read from connection ("..except..")",
+						reason = "closed",
 						connection = channel,
 					}
 				end
@@ -164,7 +192,7 @@ function receivemsg(self, channel)                                              
 			end
 		else
 			success = nil
-			except = Exception{ "MARSHALL", minor_code_value = 8,
+			except = Exception{ "MARSHAL", minor_code_value = 8,
 				message = "illegal GIOP message magic tag",
 				reason = "magictag",
 				tag = magic,
@@ -177,7 +205,7 @@ function receivemsg(self, channel)                                              
 			reason = except,
 			connection = channel,
 		}
-	end                                                                           --[[VERBOSE]] verbose:message(false, "got message ",success)
+	end                                                                           --[[VERBOSE]] verbose:message(false, "got message ",success, except)
 	return success, except, channel
 end
 

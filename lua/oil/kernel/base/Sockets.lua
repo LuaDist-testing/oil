@@ -8,16 +8,20 @@
 ----------------------- An Object Request Broker in Lua ------------------------
 --------------------------------------------------------------------------------
 -- Project: OiL - ORB in Lua: An Object Request Broker in Lua                 --
--- Release: 0.4                                                               --
+-- Release: 0.5                                                               --
 -- Title  : Socket API Wrapper                                                --
 -- Authors: Renato Maia <maia@inf.puc-rio.br>                                 --
 --------------------------------------------------------------------------------
+
+local luapcall = pcall
 
 local socket = require "socket.core"
 
 local oo = require "oil.oo"
 
 module("oil.kernel.base.Sockets", oo.class)
+
+pcall = luapcall
 
 function __index(self, field)
 	return _M[field] or socket[field]

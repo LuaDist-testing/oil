@@ -72,7 +72,7 @@ local component = require "oil.component" -- component model
 local port      = require "oil.port"      -- port model
 local arch      = require "oil.arch"      -- helper module
 
-module "oil.arch.base.client" -- layer name is 'base.client'
+module "oil.arch.basic.client" -- layer name is 'base.client'
 
 ClientBroker = component.Template{
   broker     = port.Facet,
@@ -117,7 +117,7 @@ Below, there is the definition of a builder module that defines a set of factori
 See files <code>lua/oil/builder/*.lua</code> from OiL's standard distribution for examples of other builder modules using LOOP.</p>
 
 <pre>
-local arch    = require "oil.arch.base.client" -- arch module
+local arch    = require "oil.arch.basic.client" -- arch module
 local builder = require "oil.builder"          -- helper module
 
 module "oil.builder.base.client" -- layer name is 'base.client'
@@ -155,7 +155,7 @@ This model for extension of the OiL architecture and implementation allied to th
 
 <div class="content">
 <p><small><strong>Copyright (C) 2004-2008 Tecgraf, PUC-Rio</strong></small></p>
-<small>This project is currently being maintained by <a href="http://www.tecgraf.puc-rio.br">Tecgraf</a> at <a href="http://www.puc-rio.br">PUC-Rio</a> with grants from <a href="http://www.capes.gov.br">CAPES</a> and <a href="http://www.cnpq.br">CNPq</a>.</small>
+<small>This project is currently being maintained by <a href="http://www.tecgraf.puc-rio.br">Tecgraf</a> at <a href="http://www.puc-rio.br">PUC-Rio</a>.</small>
 </div>
 
 

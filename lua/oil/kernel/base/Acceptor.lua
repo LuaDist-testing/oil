@@ -8,7 +8,7 @@
 ----------------------- An Object Request Broker in Lua ------------------------
 --------------------------------------------------------------------------------
 -- Project: OiL - ORB in Lua                                                  --
--- Release: 0.4                                                               --
+-- Release: 0.5                                                               --
 -- Title  : Client-side CORBA GIOP Protocol specific to IIOP                  --
 -- Authors: Renato Maia <maia@inf.puc-rio.br>                                 --
 --------------------------------------------------------------------------------
@@ -36,38 +36,43 @@ local type         = type
 
 local math = require "math"
 
+local tabop             = require "loop.table"
 local ObjectCache       = require "loop.collection.ObjectCache"
 local UnorderedArraySet = require "loop.collection.UnorderedArraySet"
 local OrderedSet        = require "loop.collection.OrderedSet"
 local Wrapper           = require "loop.object.Wrapper"
 
 local oo        = require "oil.oo"
-local Exception = require "oil.corba.giop.Exception"                            --[[VERBOSE]] local verbose = require "oil.verbose"
+local Exception = require "oil.corba.giop.Exception"
+local Channels  = require "oil.kernel.base.Channels"                            --[[VERBOSE]] local verbose = require "oil.verbose"
 
-module("oil.kernel.base.Acceptor", oo.class)
+module "oil.kernel.base.Acceptor"
 
-context = false
+oo.class(_M, Channels)
 
 --------------------------------------------------------------------------------
 -- connection management
 
-local function release_wrapped_socket(self)
-	UnorderedArraySet.add(self.port, self)
-end
+LuaSocketOps = tabop.copy(Channels.LuaSocketOps)
+CoSocketOps = tabop.copy(Channels.CoSocketOps)
 
-local function release_plain_socket(self)
+function LuaSocketOps:release()
 	UnorderedArraySet.add(self.port, self.__object)
 end
 
-local function probe_wrapped_socket(self)
-	local list = { self }
-	return self.context.sockets:select(list, nil, 0)[1] == list[1]
+function CoSocketOps:release()
+	UnorderedArraySet.add(self.port, self)
 end
 
 local list = {}
-local function probe_plain_socket(self)
+function LuaSocketOps:probe()
 	list[1] = self.__object
-	return self.context.sockets:select(list, nil, 0)[1] == list[1]
+	return self.sockets:select(list, nil, 0)[1] == list[1]
+end
+
+function CoSocketOps:probe()
+	local list = { self }
+	return self.sockets:select(list, nil, 0)[1] == list[1]
 end
 
 --------------------------------------------------------------------------------
@@ -76,22 +81,13 @@ Port = oo.class()
 
 function Port:__init(object)
 	self = oo.rawnew(self, object)
-	local context = self.context
+	local factory = self.factory
 	self.wrapped = ObjectCache()
 	function self.wrapped.retrieve(_, socket)
-		if type(socket) ~= "table" then
-			socket = Wrapper{
-				__object = socket,
-				probe   = probe_plain_socket,
-				release = release_plain_socket,
-			}
-		else
-			socket.probe   = probe_wrapped_socket
-			socket.release = release_wrapped_socket
-		end
-		socket.context = context
-		socket.port    = self
-		return context.__component:setupsocket(socket)
+		socket = factory:setupsocket(socket)
+		socket.socket = factory.sockets
+		socket.port = self
+		return socket
 	end
 	
 	UnorderedArraySet.add(self, self.__object)
@@ -102,7 +98,7 @@ end
 function Port:accept(probe)                                                     --[[VERBOSE]] verbose:channels("accepting channel from port with ",#self," active channels")
 	local except
 	if OrderedSet.empty(self) then
-		local selected = self.context.sockets:select(self, nil, probe and 0)
+		local selected = self.factory.sockets:select(self, nil, probe and 0)
 		for _, channel in ipairs(selected) do
 			if channel == self.__object then
 				channel, except = channel:accept()
@@ -122,19 +118,6 @@ function Port:accept(probe)                                                     
 end
 
 --------------------------------------------------------------------------------
--- setup of TCP socket options
-
-function setupsocket(self, socket)
-	local options = self.options
-	if options then
-		for name, value in pairs(options) do
-			socket:setoption(name, value)
-		end
-	end
-	return socket
-end
-
---------------------------------------------------------------------------------
 -- channel cache for reuse
 
 function __init(self, object)
@@ -147,7 +130,7 @@ function __init(self, object)
 		__index = function(hosts, host)
 			local cache = ObjectCache()
 			function cache.retrieve(_, port)
-				local socket, errmsg = self.context.sockets:tcp()
+				local socket, errmsg = self.sockets:tcp()
 				if socket then
 					self:setupsocket(socket)
 					_, errmsg = socket:bind(host, port)
@@ -155,7 +138,7 @@ function __init(self, object)
 						_, errmsg = socket:listen()
 						if _ then                                                           --[[VERBOSE]] verbose:channels("new port binded to ",host,":",port)
 							return Port{
-								context = self.context,
+								factory = self,
 								__object = socket,
 							}
 						else
@@ -229,8 +212,17 @@ local PortLowerBound = 2809 -- inclusive (never at first attempt)
 local PortUpperBound = 9999 -- inclusive
 
 function default(self, profile)
+	local sockets = self.sockets
 	profile = profile or {}
-	profile.host = profile.host or "*"
+	
+	-- find a network interface
+	local host = profile.host
+	if host == nil or host == "*" then
+		profile.host = "*"
+		host = sockets.dns.gethostname()
+	end
+	
+	-- find a socket port
 	if not profile.port then
 		local ports = self.cache[profile.host]
 		local start = PortLowerBound + math.random(PortUpperBound - PortLowerBound)
@@ -254,5 +246,23 @@ function default(self, profile)
 			end
 		until port or count == start
 	end
+	
+	-- collect addresses
+	host = profile.refhost or host
+	local addr, info = sockets.dns.toip(host)
+	if addr then
+		addr = info.ip
+		addr[#addr+1] = info.name
+		for _, alias in ipairs(info.alias) do
+			addr[#addr+1] = alias
+		end
+	else
+		addr = {host}
+	end
+	for index, name in ipairs(addr) do
+		addr[name] = index
+	end
+	profile.addresses = addr
+	
 	return profile
 end

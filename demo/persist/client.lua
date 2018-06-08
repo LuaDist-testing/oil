@@ -5,7 +5,7 @@ oil.main(function()
 	
 	orb:loadidlfile("hello.idl")
 
-	local hello = orb:newproxy("corbaloc::/MyHello", "Hello")
+	local hello = orb:newproxy("corbaloc::/MyHello", nil, "Hello")
 
 	local secs = 1
 	local dots = 3

@@ -46,13 +46,13 @@
 <div class="content">
 <h1>Using Flavors</h1>
 <p><a href="../basics/brokers.html">Brokers</a> are created merging components assemblies from different layers.
-The layers used to create a broker are denominated its <em>flavor</em>.
+The layers used to create a broker are denominated a <em>flavor</em>.
 The flavor used in the creation of a broker is provided by field <code>flavor</code> of the configuration table passed as argument of function <a href="../basics/module.html#init"><code>oil.init</code></a><code>(config)</code>.
 The value of this field must be a string with the names of the different layers separated by semicolons (<code>;</code>), like in the example below:</p>
 
 <pre>
 broker = oil.init{
-  flavor = "intercepted;corba;typed;base"
+  flavor = "intercepted;cooperative;corba;base"
 }
 </pre>
 
@@ -90,7 +90,7 @@ broker.RequestListener.sockets    = broker.BasicSystem.sockets
 
 <div class="content">
 <p><small><strong>Copyright (C) 2004-2008 Tecgraf, PUC-Rio</strong></small></p>
-<small>This project is currently being maintained by <a href="http://www.tecgraf.puc-rio.br">Tecgraf</a> at <a href="http://www.puc-rio.br">PUC-Rio</a> with grants from <a href="http://www.capes.gov.br">CAPES</a> and <a href="http://www.cnpq.br">CNPq</a>.</small>
+<small>This project is currently being maintained by <a href="http://www.tecgraf.puc-rio.br">Tecgraf</a> at <a href="http://www.puc-rio.br">PUC-Rio</a>.</small>
 </div>
 
 

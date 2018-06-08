@@ -8,7 +8,7 @@
 ----------------------- An Object Request Broker in Lua ------------------------
 --------------------------------------------------------------------------------
 -- Project: OiL - ORB in Lua: An Object Request Broker in Lua                 --
--- Release: 0.4 alpha                                                         --
+-- Release: 0.5 alpha                                                         --
 -- Title  : Interoperable Naming Service                                      --
 -- Authors: Leonardo S. A. Maciel <leonardo@maciel.org>                       --
 --------------------------------------------------------------------------------
@@ -41,7 +41,7 @@ local table  = require "table"
 local oo                = require "oil.oo"
 local assert            = require "oil.assert"
 local MapWithArrayOfKey = require "loop.collection.MapWithArrayOfKeys"
-local UnorderedArray    = require "loop.collection.UnorderedArray"
+local UnorderedArray    = require "loop.collection.UnorderedArray"              --[[VERBOSE]] local verbose = require "oil.verbose"
 
 module "oil.corba.services.naming"
 
@@ -431,6 +431,6 @@ end
 
 function new()
   return NamingContextExt(),
-         "NamingService",
+         "NameService",
          "IDL:omg.org/CosNaming/NamingContextExt:1.0"
 end
